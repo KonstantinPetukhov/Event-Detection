@@ -1,115 +1,137 @@
 import cv2
-import asyncio
-import json
-import time
 import os
-from datetime import datetime
-from ultralytics import YOLO
+import asyncio
+import time
+import json
 from concurrent.futures import ThreadPoolExecutor
+from ultralytics import YOLO
+from datetime import datetime
+import subprocess
 
 # Загрузка модели
-model = YOLO('last.pt')
+model = YOLO("last.pt")  # Изменено на last.pt
 
-# Функция для загрузки данных из JSON файла
-def load_rtsp_data(file_path):
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    return data
+# Загрузка данных из data.json
+with open('data.json', 'r') as f:
+    data = json.load(f)
 
-# Загрузка RTSP адресов и пути для сохранения видео
-data = load_rtsp_data('data.json')
-rtsp_urls = [value for key, value in data.items() if key.startswith('RTSP_Adres')]
-base_output_path = data['Path_file']
+# Извлечение путей сохранения файлов и RTSP адресов
+base_path = data.get("Path_file", "видео")  # Путь для сохранения видео
+archive_dir = os.path.join(base_path, "Видеоархив")  # Папка "Видеоархив"
+os.makedirs(archive_dir, exist_ok=True)
 
-# Функция для получения пути к папке с текущей датой
-def get_output_path():
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    output_path = os.path.join(base_output_path, "Видеоархив", current_date)
-    os.makedirs(output_path, exist_ok=True)  # Создаёт папку, если она не существует
-    return output_path
+# Извлечение RTSP адресов
+rtsp_streams = [value for key, value in data.items() if key.startswith("RTSP_Adres")]
 
-class_names = {
-    0: "Mycop",
-    1: "Chelovek",
-    2: "Chelovek c Mycopom",
-    3: "Mycop v mycopky",
-    4: "chelovek",
-    5: "Mycop na zemlyu"
-}
+# Функция для получения текущей даты 
+def get_current_date_folder():
+    return datetime.now().strftime("%Y-%m-%d")
 
-def process_stream(rtsp_url, camera_number):
-    # Получаем путь для сохранения видео
-    output_path = get_output_path()
+# Функция для обработки видеопотока
+def process_stream(rtsp_url, stream_number):
+    record_counter = 1  # Счетчик видео
+    recording = False  # Флаг записи
 
-    # Открытие потока
-    cap = cv2.VideoCapture(rtsp_url)
+    # Получение текущей даты для создания папки
+    current_date_folder = get_current_date_folder()
+    date_folder_path = os.path.join(archive_dir, current_date_folder)
+    os.makedirs(date_folder_path, exist_ok=True)
 
-    if not cap.isOpened():
-        print(f"Ошибка: Не удалось открыть поток RTSP {rtsp_url}.")
-        return
-
-    # Формирование уникального имени файла
-    video_number = 1               
-    output_file = os.path.join(output_path, f'Камера{camera_number:02d}_{video_number:02d}.avi')
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(output_file, fourcc, 20.0, (int(cap.get(3)), int(cap.get(4))))
-
-    recording = False
-    record_start_time = 0
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            print(f"Ошибка: Не удалось получить кадр из {rtsp_url}.")
-            break
+        cap = cv2.VideoCapture(rtsp_url)  # Открытие RTSP потока
+        if not cap.isOpened():
+            print(f"Не удалось открыть поток {stream_number}. Повторная попытка через 1 секунду.")
+            time.sleep(1)  # Задержка перед повторной попыткой
+            continue
 
-        # Обработка кадра с помощью модели YOLO
-        results = model.predict(source=frame)
-        event_detected = 0
-        # Отображение результатов
-        for result in results:
-            boxes = result.boxes  # Получаем рамки
-            for box in boxes:
-                x1, y1, x2, y2 = box.xyxy[0]  # Координаты рамки
-                conf = box.conf[0]  # Уверенность
-                cls = int(box.cls[0])  # Класс
-                class_name = class_names.get(cls, "Unknown")
+        # Определяем параметры кодирования видео
+        video_filename = os.path.join(date_folder_path, f"Камера{stream_number:02d}_{record_counter:02d}.avi")
+        
+        # Запуск FFmpeg для записи видео
+        ffmpeg_command = [
+            'ffmpeg',
+            '-y',  # Перезаписывать выходной файл
+            '-f', 'rawvideo',
+            '-pixel_format', 'bgr24',
+            '-video_size', f"{int(cap.get(3))}x{int(cap.get(4))}",
+            '-framerate', '15',
+            '-i', '-',  # Входные данные будут переданы через stdin
+            '-c:v', 'mpeg4',
+            '-an',
+            video_filename
+        ]
+        #запуск ffmpeg
+        process = subprocess.Popen(ffmpeg_command, stdin=subprocess.PIPE)
 
-                # Рисуем рамку на кадре
-                label = f'{class_name}, Conf: {conf:.2f}'
-                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
-                cv2.putText(frame, label, (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        while True:
+            ret, frame = cap.read()  # Чтение кадра из потока
+            if not ret: #Если не получилось получить кадр
+                print(f"Не удалось получить кадр из потока {stream_number}. Начинаем новую запись.")
+                if recording:
+                    process.stdin.close()  # Закрываем stdin для FFmpeg
+                    process.wait()  # Ждем завершения процесса
+                    recording = False  # Сбрасываем флаг записи
+                cap.release()  # Освобождение захвата видео
+                record_counter += 1  # Увеличиваем счетчик записи
+                break  # Выход из внутреннего цикла для повторного подключения к потоку
 
-                # Проверка на обнаружение "Chelovek"
-                if class_name.lower() == "chelovek":
-                    event_detected = 1
-                    if not recording:
-                        recording = True
-                        record_start_time = time.time()
+            # Выполнение предсказания на текущем кадре
+            results = model(frame, stream=True, conf=0.5)
+            # Определение цветов для классов
+            colors = {
+                "Mycop": (255, 0, 0),  # Синий
+                "Chelovek": (255, 192, 203),  # Розовый
+                "Chelovek c Mycopom": (173, 216, 230),  # Голубой
+                "Mycop na zemlyu": (0, 0, 255),  # Красный
+                "chelovek": (255, 228, 196),  # Бежевый
+                "Mycop v mycopky": (0, 255, 0)  # Зеленый
+            }
 
-        # Если запись активна, проверяем время
-        if recording:
-            out.write(frame)  # Запись кадра в файл
-            if time.time() - record_start_time > 5 and event_detected == 0:
-                recording = False  # Останавливаем запись
-                event_detected = 0
-                out.release()
-                video_number+=1
-                output_file = os.path.join(output_path, f'Камера{camera_number:02d}_{video_number:02d}.avi')
-                out = cv2.VideoWriter(output_file, fourcc, 20.0, (int(cap.get(3)), int(cap.get(4))))  
-            else:  # Если событие обнаружено
-                    record_start_time = time.time()
+            # Внутри цикла обработки обнаруженных объектов
+            detected_classes = set()  # Множество для хранения обнаруженных классов
+            for result in results:
+                if result.boxes:
+                    for detection in result.boxes.data:  # Проходим по всем обнаруженным объектам
+                        class_id = int(detection[5])  # Индекс класса
+                        class_name = model.names[class_id]  # Получаем имя класса по его ID
+                        detected_classes.add(class_name)  # Добавляем класс в множество
 
-    # Освобождение ресурсов
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
+                        # Определяем цвет для текущего класса
+                        color = colors.get(class_name, (255, 255, 255))
+
+                        # Рисуем прямоугольник и метку на кадре
+                        x1, y1, x2, y2 = map(int, detection[:4])  # Координаты бокса
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(frame, class_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            # Проверяем, обнаружены ли нужные классы
+            if any(cls in detected_classes for cls in ["Chelovek", "Chelovek c Mycopom", "Mycop v mycopky", "Mycop na zemlyu"]):
+                if not recording:  # Если запись еще не начата
+                    recording = True  # Устанавливаем флаг записи
+                    print(f"Начинаем запись на потоке {stream_number}.")
+                # Отправка кадра в FFmpeg
+                process.stdin.write(frame.tobytes())
+               
+            else:
+                if recording:  # Если запись была начата, но нужные классы больше не обнаружены
+                    process.stdin.close()  # Закрываем stdin для FFmpeg
+                    process.wait()  # Ждем завершения процесса
+                    recording = False  # Сбрасываем флаг записи
+                    print(f"Запись остановлена на потоке {stream_number}.")
+
+        # Освобождение ресурсов и подготовка к новой записи
+        print(f"Поток {stream_number} закрыт. Попытка переподключения...")
 
 async def main():
-    # Создаем пул потоков
+    # Создание пула потоков
     with ThreadPoolExecutor() as executor:
-        # # Запускаем обработку потоков асинхронно
-        await asyncio.gather(*(loop.run_in_executor(executor, process_stream, url, i + 1) for i, url in enumerate(rtsp_urls)))
+        loop = asyncio.get_event_loop()
+        tasks = [
+            loop.run_in_executor(executor, process_stream, rtsp_url, i)
+            for i, rtsp_url in enumerate(rtsp_streams, start=1)
+        ]
+        await asyncio.gather(*tasks)
 
+# Запуск асинхронной функции main
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    asyncio.run(main())
