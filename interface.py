@@ -1,113 +1,132 @@
-import sys
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLineEdit, QPushButton, QHBoxLayout, QFileDialog
-from PyQt6 import QtCore
-from PyQt6.QtCore import Qt
+import customtkinter as ctk
+from tkinter import filedialog
+import json
+import subprocess
+import os
+from notifypy import Notify
 
-class SimpleApp(QWidget):
-    def __init__(self):
-        super().__init__()
+# Создаем основное окно
+app = ctk.CTk()
+app.title("Приложение")
+app.geometry("480x480")
+ctk.set_appearance_mode("dark")  
+ctk.set_default_color_theme("dark-blue")  
 
-        self.setWindowTitle("Простой интерфейс")
-        self.setFixedSize(500, 400)
-        self.layout = QVBoxLayout()
+# Переменная для хранения процесса
+process = None
 
-        # Список для хранения полей ввода
-        self.input_fields = []
+# Функция для открытия диалогового окна выбора папки
+def browse_directory():
+    folder_selected = filedialog.askdirectory()
+    entry1.delete(0, ctk.END)  # Очищаем текущее значение в поле
+    entry1.insert(0, folder_selected)  # Вставляем выбранный путь
 
-        # Создаем фиксированный layout для первых двух полей ввода
-        fixed_layout = QVBoxLayout()
+# Функция для добавления новых полей ввода
+def add_entry():
+    global entry_count
+    if entry_count < 6:  # Проверяем, не превышает ли количество полей 6
+        entry_count += 1
+        new_entry = ctk.CTkEntry(frame3, placeholder_text="Введите rtsp-адрес камеры", width=300)
+        new_entry.pack(side=ctk.TOP, padx=(0, 110), pady=(0, 10))  # Отступы сверху и снизу
+        
+        # Если количество полей равно 6, отключаем кнопку "+"
+        if entry_count == 6:
+            plus_button.configure(state="disabled")
 
-        # Создаем горизонтальный layout для первого поля ввода и кнопки "Обзор"
-        h_layout1 = QHBoxLayout()
-        self.input1 = QLineEdit(self)
-        self.input1.setPlaceholderText("Введите первое значение")
-        h_layout1.addWidget(self.input1)
+        # Если кнопка "-" еще не создана, создаем ее
+        if entry_count == 1:
+            create_remove_button()
 
-        # Кнопка "Обзор"
-        self.browse_button = QPushButton("Обзор", self)
-        self.browse_button.clicked.connect(self.browse_directory)
-        h_layout1.addWidget(self.browse_button)
+# Функция для создания кнопки "-"
+def create_remove_button():
+    global remove_button
+    remove_button = ctk.CTkButton(frame2, text="-", command=remove_entry, width=50, hover_color="white", fg_color="gray", text_color="black")
+    remove_button.place(relx=1.0, x=-20, y=0, anchor='ne')  # Размещаем кнопку в правом верхнем углу фрейма
 
-        # Добавляем горизонтальный layout в фиксированный layout
-        fixed_layout.addLayout(h_layout1)
+# Функция для удаления последнего поля ввода
+def remove_entry():
+    global entry_count
+    if entry_count > 0:  # Проверяем, есть ли поля для удаления
+        entry_count -= 1
+        # Удаляем последнее добавленное поле
+        if frame3.winfo_children():
+            frame3.winfo_children()[-1].destroy()  # Удаляем последнее поле
 
-        # Создаем горизонтальный layout для второго поля ввода и кнопок "+" и "-"
-        h_layout2 = QHBoxLayout()
-        self.input2 = QLineEdit(self)
-        self.input2.setPlaceholderText("Введите второе значение")
-        h_layout2.addWidget(self.input2)
+        # Если количество полей стало 0, скрываем кнопку "-"
+        if entry_count == 0:
+            remove_button.place_forget()  # Скрываем кнопку "-"
+            plus_button.configure(state="normal")  # Включаем кнопку "+"
 
-        # Кнопка "+"
-        self.add_button = QPushButton("+", self)
-        self.add_button.clicked.connect(self.add_input_field)
-        h_layout2.addWidget(self.add_button)
+# Функция для сохранения данных в JSON файл
+def save_to_json():
+    global process
+    path_file = entry1.get()  # Получаем путь из entry1
+    rtsp_address = entry2.get()
+    rtsp_list = [entry.get() for entry in frame3.winfo_children()]
+    notification = Notify()
+    notification.title = "Запуск приложения"
+    notification.message = "Приложение было запущано"
+    notification.send()
+    data = {
+        "Path_file": path_file,
+        "RTSP_Adres": rtsp_address,
+    }
 
-        # Кнопка "-" (изначально скрыта)
-        self.minus_button = QPushButton("-", self)
-        self.minus_button.clicked.connect(self.remove_last_input_field)
-        self.minus_button.setVisible(False)
-        h_layout2.addWidget(self.minus_button)
+    # Добавляем rtsp адреса из дополнительных полей
+    for i, rtsp in enumerate(rtsp_list):
+        data[f"RTSP_Adres_{i+2}"] = rtsp
 
-        # Добавляем второй горизонтальный layout в фиксированный layout
-        fixed_layout.addLayout(h_layout2)
+    # Сохраняем данные в JSON файл в текущей директории
+    json_file_path = os.path.join(os.getcwd(), 'data.json')
+    with open(json_file_path, 'w') as json_file:
+        json.dump(data, json_file, indent=4)
 
-        # Добавляем фиксированный layout в основной layout
-        self.layout.addLayout(fixed_layout)
+    # Запускаем процесс
+    process = subprocess.Popen(["python", "detection.py"])
+    stop_button.configure(state="normal")  # Разблокируем кнопку "Стоп"
 
-        # Создаем отдельный вертикальный layout для новых полей
-        self.new_fields_layout = QVBoxLayout()
-        self.layout.addLayout(self.new_fields_layout)
+# Функция для завершения процесса
+def stop_process():
+    global process
+    if process:
+        # Завершаем процесс
+        process.terminate()
+        process = None
+        stop_button.configure(state="disabled")  # Блокируем кнопку "Стоп"
 
-        # Устанавливаем layout в окно
-        self.setLayout(self.layout)
+frame = ctk.CTkFrame(app, fg_color="transparent")
+frame.pack(pady=(20, 10))
+frame2 = ctk.CTkFrame(app, fg_color="transparent")
+frame2.pack(pady=(20, 10), fill="x")
+frame3 = ctk.CTkFrame(app, fg_color="transparent")  # Новый фрейм для дополнительных полей
+frame3.pack(pady=(10, 10))
 
-        # Кнопка "Запустить"
-        self.run_button = QPushButton("Запустить", self)
-        self.layout.addWidget(self.run_button)
+# Создаем первое поле ввода
+entry1 = ctk.CTkEntry(frame, placeholder_text="Введите путь сохранения", width=300)
+entry1.pack(side=ctk.LEFT, pady=(20, 10))  # Размещаем поле ввода слева
 
-    def browse_directory(self):
-        """Открывает диалог выбора папки и записывает выбранный путь в первое поле ввода."""
-        folder_path = QFileDialog.getExistingDirectory(self, "Выберите папку")
-        if folder_path:
-            self.input1.setText(folder_path)
+# Создаем кнопку "Обзор"
+browse_button = ctk.CTkButton(frame, text="Обзор", command=browse_directory, width=100, hover_color="white", fg_color="gray", text_color="black")
+browse_button.pack(side=ctk.LEFT, padx=(10, 0), pady=(10, 0))  # Размещаем кнопку справа от поля ввода
 
-    def add_input_field(self):
-        """Добавляет новое поле ввода в отдельный layout."""
-        if len(self.input_fields) < 6:
-            new_input = QLineEdit(self)
-            new_input.setPlaceholderText("Введите значение")
-            self.new_fields_layout.addWidget(new_input)
-            self.input_fields.append(new_input)
+# Создаем второе поле ввода
+entry2 = ctk.CTkEntry(frame2, placeholder_text="Введите rtsp-адрес камеры", width=300)
+entry2.pack(side=ctk.LEFT, padx=(35, 0))  # Отступы сверху и снизу
 
-            # Показываем кнопку "-" если это первое добавление
-            if len(self.input_fields) == 1:
-                self.minus_button.setVisible(True)
+# Инициализируем счетчик полей
+entry_count = 0
 
-            # Если достигли лимита, отключаем кнопку "+"
-            if len(self.input_fields) == 6:
-                self.add_button.setEnabled(False)
+# Создаем кнопку "+"
+plus_button = ctk.CTkButton(frame2, text="+", command=add_entry, width=50, hover_color="white", fg_color="gray", text_color="black")
+plus_button.pack(side=ctk.RIGHT, padx=(0, 85), pady=(0, 0))  # Размещаем кнопку справа от второго поля ввода
 
-    def remove_last_input_field(self):
-        """Удаляет последнее добавленное поле ввода."""
-        if self.input_fields:
-            last_input = self.input_fields.pop()
-            last_input.deleteLater()
+# Создаем кнопку "Стоп" и фиксируем её на месте
+stop_button = ctk.CTkButton(app, text="Стоп", command=stop_process, width=100, hover_color="whte", fg_color="red", text_color="black", state="disabled")
+stop_button.pack(side=ctk.BOTTOM, pady=(0, 0), padx=(0,0))  # Размещаем кнопку "Стоп" под кнопкой "Запустить"
 
-            # Скрываем кнопку "-" если больше нет полей
-            if not self.input_fields:
-                self.minus_button.setVisible(False)
+# Создаем кнопку "Запустить" и фиксируем её на месте
+run_button = ctk.CTkButton(app, text="Запустить", command=save_to_json, width=100, hover_color="white", fg_color="green", text_color="black")
+run_button.pack(side=ctk.BOTTOM, pady=(20, 10))  # Размещаем кнопку внизу по центру
 
-            # Включаем кнопку "+" если количество полей меньше 6
-            if len(self.input_fields) < 6:
-                self.add_button.setEnabled(True)
-
-    def changeWindow(self, event):
-        # Игнорируем событие закрытия окна
-        if event.type() == QtCore.QEvent.WindowStateChange or self.windowState() & Qt.WindowState.WindowMaximized:
-            self.setWindowState(Qt.WindowState.WindowNoState)
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = SimpleApp()
-    window.show()
-    sys.exit(app.exec())
+app.resizable(False, False)  # Запускаем основной цикл приложения
+app.mainloop()
