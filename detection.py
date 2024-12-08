@@ -72,7 +72,6 @@ def process_stream(rtsp_url, stream_number):
                     process.wait()  # Ждем завершения процесса
                     recording = False  # Сбрасываем флаг записи
                 cap.release()  # Освобождение захвата видео
-                record_counter += 1  # Увеличиваем счетчик записи
                 break  # Выход из внутреннего цикла для повторного подключения к потоку
 
             # Выполнение предсказания на текущем кадре
@@ -105,15 +104,41 @@ def process_stream(rtsp_url, stream_number):
                         cv2.putText(frame, class_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
             # Проверяем, обнаружены ли нужные классы
-            if any(cls in detected_classes for cls in ["Chelovek", "Chelovek c Mycopom", "Mycop v mycopky", "Mycop na zemlyu"]):
+            if any(cls in detected_classes for cls in ["Chelovek", "Chelovek c Mycopom", "Mycop v mycopky", "Mycop na zemlyu", "Mycop"]):
                 if not recording:  # Если запись еще не начата
                     recording = True  # Устанавливаем флаг записи
                     print(f"Начинаем запись на потоке {stream_number}.")
-                # Отправка кадра в FFmpeg
+                    record_counter += 1 
                 process.stdin.write(frame.tobytes())
-               
+                  # Увеличиваем счетчик записи
             else:
-                if recording:  # Если запись была начата, но нужные классы больше не обнаружены
+                if recording:
+                    
+                    for i in range(50):
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        detected_classes = set()  # Сбрасываем множество для нового кадра
+                        # Здесь должен быть код для получения результатов обнаружения для текущего кадра
+                        results = model(frame)  # Предполагается, что у вас есть модель для обработки кадра
+                        if results:
+                            for result in results:
+                                if result.boxes:
+                                    for detection in result.boxes.data:  # Проходим по всем обнаруженным объектам
+                                        class_id = int(detection[5])  # Индекс класса
+                                        class_name = model.names[class_id]  # Получаем имя класса по его ID
+                                        detected_classes.add(class_name)  # Добавляем класс в множество
+                                        # Определяем цвет для текущего класса
+                                        color = colors.get(class_name, (255, 255, 255))
+                                        # Рисуем прямоугольник и метку на кадре
+                                        x1, y1, x2, y2 = map(int, detection[:4])  # Координаты бокса
+                                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                                        cv2.putText(frame, class_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+
+                        # Отправка кадра в FFmpeg
+
+                        process.stdin.write(frame.tobytes())
                     process.stdin.close()  # Закрываем stdin для FFmpeg
                     process.wait()  # Ждем завершения процесса
                     recording = False  # Сбрасываем флаг записи
@@ -121,6 +146,7 @@ def process_stream(rtsp_url, stream_number):
 
         # Освобождение ресурсов и подготовка к новой записи
         print(f"Поток {stream_number} закрыт. Попытка переподключения...")
+        
 
 async def main():
     # Создание пула потоков
